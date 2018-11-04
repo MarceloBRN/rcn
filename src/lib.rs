@@ -1,39 +1,47 @@
 use std::marker::PhantomData;
 use std::ptr::{self, NonNull};
-use std::cell::RefCell;
 use std::cell::Cell;
-use std::alloc::{GlobalAlloc, Layout, System};
+#[allow(unused_imports)]
+use std::alloc::{GlobalAlloc, Layout, System, handle_alloc_error};
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 
-#[global_allocator]
-static GLOBAL: System = System;
+// #[global_allocator]
+// static GLOBAL: System = System;
 
 #[derive(Debug, Clone)]
-struct RcBox<T: ?Sized> {
+struct RcBox<T> {
     strong: Cell<usize>,
     weak: Cell<usize>,
-    none: Cell<bool>,
-    value: T,
+    value: Option<T>,
 }
 
-pub struct Rcn<T: ?Sized>{
+pub struct Rcn<T>{
     ptr: NonNull<RcBox<T>>,
     phantom: PhantomData<T>,
 }
 
 #[allow(dead_code)]
 impl<T> Rcn<T> {
-
     pub fn new(data: T) -> Rcn<T> {
         Rcn::<T> {
             ptr: NonNull::new(Box::into_raw(Box::new(RcBox {
                 strong: Cell::new(1),
-                weak:  Cell::new(1),
-                none:  Cell::new(false),
-                value: data,
+                weak:  Cell::new(0),
+                value: Some(data),
+            }))).unwrap(),
+            phantom: PhantomData,
+        }
+    }
+
+    pub fn none() -> Rcn<T> {
+        Rcn::<T> {
+            ptr: NonNull::new(Box::into_raw(Box::new(RcBox {
+                strong: Cell::new(0),
+                weak:  Cell::new(0),
+                value: None,
             }))).unwrap(),
             phantom: PhantomData,
         }
@@ -41,23 +49,7 @@ impl<T> Rcn<T> {
 }
 
 #[allow(dead_code)]
-impl<T: Default> Rcn<T> {
-
-    pub fn none() -> Rcn<T> {
-        Rcn::<T> {
-            ptr: NonNull::new(RefCell::new(RcBox {
-                strong: Cell::new(0),
-                weak:  Cell::new(0),
-                none:  Cell::new(true),
-                value: Default::default(),
-            }).as_ptr()).unwrap(),
-            phantom: PhantomData,
-        }
-    }
-}
-
-#[allow(dead_code)]
-impl<T: ?Sized> Rcn<T> {
+impl<T> Rcn<T> {
 
     #[inline]
     pub fn weak_count(&self) -> usize {
@@ -115,29 +107,21 @@ impl<T: ?Sized> Rcn<T> {
 
     #[inline]
     pub fn is_unique(&self) -> bool {
-        self.strong_count() == 1
+        self.weak_count() == 0 && self.strong_count() == 1
     }
 
     
     #[inline]
     pub fn is_none(&self) -> bool {
         unsafe {
-            if self.ptr.as_ref().none.get() {
-                true
-            } else {
-                false
-            }
+            self.ptr.as_ref().value.is_none()
         }
     }
 
     #[inline]
     pub fn is_some(&self) -> bool {
         unsafe {
-            if !self.ptr.as_ref().none.get() {
-                true
-            } else {
-                false
-            }
+            self.ptr.as_ref().value.is_some()
         }
     }
 
@@ -147,18 +131,18 @@ impl<T: ?Sized> Rcn<T> {
     }
 
     #[inline]
-    pub fn share(rc: &Rcn<T>) -> Rcn<T> {
-        rc.inc_strong();
+    pub fn share(&self) -> Rcn<T> {
+        self.inc_strong();
         Rcn {
-            ptr: rc.ptr,
+            ptr: self.ptr,
             phantom: PhantomData,
         }
     }
 
     #[inline]
-    pub fn make_none(&self) {
+    pub fn make_none(&mut self) {
         unsafe{
-            self.ptr.as_ref().none.set(true)
+            self.ptr.as_mut().value = None; 
         }
     }
 
@@ -171,26 +155,27 @@ impl<T: ?Sized> Rcn<T> {
 }
 
 #[allow(dead_code)]
-impl<T: ?Sized + Clone> Rcn<T> {
+impl<T: Clone> Rcn<T> {
 
     #[inline]
     pub fn set(&mut self, data: &T) {
-        // if self.is_unique() {
+        if self.is_some() {
             unsafe {
-                self.ptr.as_mut().value = data.clone();
+                self.ptr.as_mut().value = Some(data.clone());
             }
-        // }
+        } else {
+            panic!("write (set) in none rcn!\n \t help: Use Rcn:new(...) to none pointers");
+        }
     }
 
     #[inline]
     pub fn get(&self) -> T {
-        unsafe {
-            if !self.ptr.as_ref().none.get() {
-                self.ptr.as_ref().value.clone()
-            } else {
-                panic!("Value is none!!!");
+        if self.is_some() {
+            unsafe {
+                self.ptr.as_ref().value.as_ref().unwrap().clone()
             }
-             
+        } else {
+            panic!("access (get) none rcn!");
         }
     }
 
@@ -200,8 +185,7 @@ impl<T: ?Sized + Clone> Rcn<T> {
             if self.is_unique() {
                 self.ptr.as_mut().strong.set(0);
                 self.ptr.as_mut().weak.set(0);
-                self.ptr.as_mut().none.set(true);
-                Some(self.ptr.as_mut().value.clone())
+                self.ptr.as_mut().value.take()
             } else {
                 None
             }
@@ -209,69 +193,73 @@ impl<T: ?Sized + Clone> Rcn<T> {
     }
 }
 
-impl<T: ?Sized + Clone> Clone for Rcn<T> {
+impl<T: Clone> Clone for Rcn<T> {
     #[inline]
     fn clone(&self) -> Rcn<T> {
         Rcn::new((**self).clone())
     }
 }
 
-impl <T: ?Sized> Drop for Rcn<T> {
+impl <T> Drop for Rcn<T> {
     fn drop(&mut self) {
-        // println!("x0 = s {}, w {}", self.strong_count(), self.weak_count());
-        self.dec_strong();
-        // println!("x1 = s {}, w {}", self.strong_count(), self.weak_count());
+        if self.is_some() {
+            self.dec_strong();
+        }
         if self.strong_count() == 0 {
             unsafe {
-                ptr::drop_in_place(self.ptr.as_mut());
-                self.ptr.as_ref().none.set(true);
+                // ptr::drop_in_place(self.ptr.as_mut());
+                self.ptr.as_mut().value = None;
             }
-            // println!("x2 = s {}, w {}", self.strong_count(), self.weak_count());
-            self.dec_weak();
-            // println!("x3 = s {}, w {}", self.strong_count(), self.weak_count());
+            // self.dec_weak();
             if self.weak_count() == 0 {
-                unsafe { GLOBAL.dealloc(self.ptr.as_ptr() as *mut u8, Layout::for_value(self.ptr.as_ref())); }
+                
+            //     unsafe { println!("{:?} {:?}", self.ptr.as_ptr(), Layout::for_value(self.ptr.as_ref())); }
+                unsafe { 
+                    ptr::drop_in_place(self.ptr.as_mut()); 
+                    // GLOBAL.dealloc(self.ptr.as_ptr() as *mut u8, Layout::for_value(self.ptr.as_ref())); 
+                }
+            //     unsafe { GLOBAL.dealloc(self.ptr.as_ptr() as *mut u8, Layout::from_size_align_unchecked(28, 8)); }
             }
         }
     }
 }
 
-impl<T: ?Sized> Deref for Rcn<T> {
+impl<T> Deref for Rcn<T> {
     type Target = T;
 
     #[inline(always)]
     fn deref(&self) -> &T {
-        unsafe {
-            if !self.ptr.as_ref().none.get() {
-                &self.ptr.as_ref().value
-            } else {
-                panic!("Deref of none value!!!");
+        if self.is_some() {
+            unsafe {
+                self.ptr.as_ref().value.as_ref().unwrap()
             }
+        } else {
+            panic!("deref of none rcn!");
         }
     }
 }
 
-impl<T: ?Sized> DerefMut for Rcn<T> {
+impl<T> DerefMut for Rcn<T> {
     
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
-        unsafe {
-            if !self.ptr.as_ref().none.get() {
-                &mut self.ptr.as_mut().value
-            } else {
-                panic!("DerefMut of none value!!!");
+        if self.is_some() {
+            unsafe {
+                self.ptr.as_mut().value.as_mut().unwrap()
             }
+        } else {
+            panic!("deref_mut of none rcn!");
         }
     }
 }
 
-impl<T: ?Sized + fmt::Display> fmt::Display for Rcn<T> {
+impl<T: fmt::Display> fmt::Display for Rcn<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&**self, f)
     }
 }
 
-impl<T: ?Sized + fmt::Debug> fmt::Debug for Rcn<T> {
+impl<T: fmt::Debug> fmt::Debug for Rcn<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
@@ -284,7 +272,7 @@ impl<T: Default> Default for Rcn<T> {
     }
 }
 
-impl<T: ?Sized + PartialEq> PartialEq for Rcn<T> {
+impl<T: PartialEq> PartialEq for Rcn<T> {
 
     #[inline(always)]
     fn eq(&self, other: &Rcn<T>) -> bool {
@@ -297,9 +285,9 @@ impl<T: ?Sized + PartialEq> PartialEq for Rcn<T> {
     }
 }
 
-impl<T: ?Sized + Eq> Eq for Rcn<T> {}
+impl<T: Eq> Eq for Rcn<T> {}
 
-impl<T: ?Sized + PartialOrd> PartialOrd for Rcn<T> {
+impl<T: PartialOrd> PartialOrd for Rcn<T> {
 
     #[inline(always)]
     fn partial_cmp(&self, other: &Rcn<T>) -> Option<Ordering> {
@@ -327,19 +315,19 @@ impl<T: ?Sized + PartialOrd> PartialOrd for Rcn<T> {
     }
 }
 
-impl<T: ?Sized> Borrow<T> for Rcn<T> {
+impl<T> Borrow<T> for Rcn<T> {
     fn borrow(&self) -> &T {
         &**self
     }
 }
 
-impl<T: ?Sized> AsRef<T> for Rcn<T> {
+impl<T> AsRef<T> for Rcn<T> {
     fn as_ref(&self) -> &T {
         &**self
     }
 }
 
-impl<T: ?Sized> fmt::Pointer for Rcn<T> {
+impl<T> fmt::Pointer for Rcn<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Pointer::fmt(&(&**self as *const T), f)
     }
@@ -351,8 +339,29 @@ impl<T> From<T> for Rcn<T> {
     }
 }
 
+// impl<T> From<Box<T>> for Rcn<T> {
+//     #[inline]
+//     fn from(v: Box<T>) -> Rcn<T> {
+//         Rcn::from_box(v)
+//     }
+// }
+
+
+// impl Rcn<dyn Any> {
+//     #[inline]
+//     pub fn downcast<T: Any>(self) -> Result<Rcn<T>, Rcn<dyn Any>> {
+//         if (*self).is::<T>() {
+//             let ptr = self.ptr.cast::<RcBox<T>>();
+//             forget(self);
+//             Ok(Rcn { ptr, phantom: PhantomData })
+//         } else {
+//             Err(self)
+//         }
+//     }
+// }
+
 #[allow(dead_code)]
-pub struct Weakn<T: ?Sized> {
+pub struct Weakn<T> {
     ptr: NonNull<RcBox<T>>,
 }
 
@@ -365,7 +374,7 @@ impl<T> Weakn<T> {
 }
 
 #[allow(dead_code)]
-impl<T: ?Sized> Weakn<T> {
+impl<T> Weakn<T> {
 
     #[inline]
     fn strong(&self) -> usize {
@@ -412,9 +421,23 @@ impl<T: ?Sized> Weakn<T> {
     }
 
     #[inline]
-    pub fn share(weak: &Weakn<T>) -> Weakn<T> {
-        weak.inc_weak();
-        Weakn { ptr: weak.ptr, }
+    pub fn share(&self) -> Weakn<T> {
+        self.inc_weak();
+        Weakn { ptr: self.ptr, }
+    }
+
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        unsafe {
+            self.ptr.as_ref().value.is_none()
+        }
+    }
+
+    #[inline]
+    pub fn is_some(&self) -> bool {
+        unsafe {
+            self.ptr.as_ref().value.is_some()
+        }
     }
 
     pub fn upgrade(&self) -> Option<Rcn<T>> {
@@ -428,41 +451,82 @@ impl<T: ?Sized> Weakn<T> {
     }
 }
 
-impl<T: ?Sized + Clone> Weakn<T> {
-    #[inline]
+impl<T: Clone> Weakn<T> {
+     #[inline]
     pub fn get(&self) -> T {
-        unsafe {
-            if !self.ptr.as_ref().none.get() {
-                self.ptr.as_ref().value.clone()
-            } else {
-                panic!("Value is none!!!");
+        if self.is_some() {
+            unsafe {
+                self.ptr.as_ref().value.as_ref().unwrap().clone()
             }
-             
+        } else {
+            panic!("access (get) none rcn!");
         }
     }
 }
 
-impl<T: ?Sized> Drop for Weakn<T> {
+impl<T> Drop for Weakn<T> {
     fn drop(&mut self) {
         self.dec_weak();
-        if self.weak() == 0 {
-            unsafe { GLOBAL.dealloc(self.ptr.cast::<u8>().as_ptr(), Layout::for_value(self.ptr.as_ref())); }
-        }
+        // if self.weak() == 0 {
+        //     unsafe { GLOBAL.dealloc(self.ptr.cast::<u8>().as_ptr(), Layout::for_value(self.ptr.as_ref())); }
+        // }
     }
 }
 
-impl<T: ?Sized + Clone> Clone for Weakn<T> {
+impl<T: Clone> Clone for Weakn<T> {
     #[inline]
     fn clone(&self) -> Weakn<T> {
         Weakn::new()
     }
 }
 
-impl<T: ?Sized + fmt::Debug> fmt::Debug for Weakn<T> {
+impl<T: fmt::Debug> fmt::Debug for Weakn<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(Weakn)")
     }
 }
+
+// unsafe fn set_data_ptr<T, U>(mut ptr: *mut T, data: *mut U) -> *mut T {
+//     ptr::write(&mut ptr as *mut _ as *mut *mut u8, data as *mut u8);
+//     ptr
+// }
+
+// impl<T> Rcn<T> {
+//     // Allocates an `RcBox<T>` with sufficient space for an unsized value
+//     unsafe fn allocate_for_ptr(ptr: *const T) -> *mut RcBox<T> {
+//         // Create a fake RcBox to find allocation size and alignment
+//         let fake_ptr = ptr as *mut RcBox<T>;
+
+//         let layout = Layout::for_value(&*fake_ptr);
+
+//         let mem = GLOBAL.alloc(layout);
+
+//         // Initialize the real RcBox
+//         let inner = set_data_ptr(ptr as *mut T, mem) as *mut RcBox<T>;
+
+//         ptr::write(&mut (*inner).strong, Cell::new(1));
+//         ptr::write(&mut (*inner).weak, Cell::new(1));
+
+//         inner
+//     }
+
+//     fn from_box(v: Box<T>) -> Rcn<T> {
+//         unsafe {
+//             let bptr = Box::into_raw(v);
+//             // let bptr = box_unique.as_ptr();
+
+//             let value_size = size_of_val(&*bptr);
+//             let ptr = Self::allocate_for_ptr(bptr);
+
+//             ptr::copy_nonoverlapping(
+//                 bptr as *const T as *const u8,
+//                 &mut (*ptr).value as *mut _ as *mut u8,
+//                 value_size);
+
+//             Rcn { ptr: NonNull::new_unchecked(ptr), phantom: PhantomData }
+//         }
+//     }
+// }
 
 #[allow(unused_imports)]
 #[cfg(test)]
@@ -474,19 +538,20 @@ mod test {
     use std::time::Instant;
 
     use std::rc::Rc;
+    use std::rc::Weak;
 
     #[test]
-    fn strong_count_test() {
+    fn rc_test() {
         let five = Rcn::new(5);
         assert_eq!(five.get(), 5);
-        let num = Rcn::share(&five);
+        let num = five.share();
         assert_eq!(num.strong_count(), 2);
         assert_eq!(five.strong_count(), 2);
         drop(num);
         assert_eq!(five.strong_count(), 1);
 
         let mut x = Rcn::new(RefCell::new(5));
-        let y = Rcn::share(&x);
+        let y = x.share();
         x.set(&RefCell::new(20));  
         assert_eq!(y.get(), RefCell::new(20));
 
@@ -511,7 +576,7 @@ mod test {
         assert_eq!(*x, 5);
 
         let x = Rcn::new(5);
-        let y = Rcn::share(&x);
+        let y = x.share();
         assert_eq!(*x, 5);
         assert_eq!(*y, 5);
     }
@@ -526,7 +591,7 @@ mod test {
     fn unique_test() {
         let x = Rcn::new(3);
         assert!(x.is_unique());
-        let y = Rcn::share(&x);
+        let y = x.share();
         assert!(!x.is_unique());
         drop(y);
         assert!(x.is_unique());
@@ -552,7 +617,7 @@ mod test {
 
         let mut cow0 = Rcn::new(75);
         let cow1 = cow0.clone();
-        let cow2 = Rcn::share(&cow1);
+        let cow2 = cow1.share();
         assert!(75 == *cow0);
         assert!(75 == *cow1);
         assert!(75 == *cow2);
@@ -575,13 +640,13 @@ mod test {
     #[test]
     fn auto_ref_test() {
         let foo: Rcn<i32> = Rcn::new(10);
-        assert_eq!(foo, Rcn::share(&foo));
+        assert_eq!(foo, foo.share());
     }
 
     #[test]
     fn partialord_test() {
         let five = Rcn::new(5);
-        let same_five = Rcn::share(&five);
+        let same_five = five.share();
         let other_five = Rcn::new(5);
         assert!(Rcn::ptr_eq(&five, &same_five));
         assert!(!Rcn::ptr_eq(&five, &other_five));
@@ -601,5 +666,112 @@ mod test {
         drop(x);
         assert!(y.upgrade().is_none());
     }
+
+    #[test]
+    fn strong_count_test() {
+        let a = Rcn::new(0);
+        assert!(Rcn::strong_count(&a) == 1);
+        let w = Rcn::downgrade(&a);
+        assert!(Rcn::strong_count(&a) == 1);
+        let b = w.upgrade().expect("upgrade of live rc failed");
+        assert!(Rcn::strong_count(&b) == 2);
+        assert!(Rcn::strong_count(&a) == 2);
+        drop(w);
+        drop(a);
+        assert!(Rcn::strong_count(&b) == 1);
+        let c = b.share();
+        assert!(Rcn::strong_count(&b) == 2);
+        assert!(Rcn::strong_count(&c) == 2);
+    }
+
+    #[test]
+    fn weak_count_test() {
+        let a = Rcn::new(0);
+        assert!(Rcn::strong_count(&a) == 1);
+        assert!(Rcn::weak_count(&a) == 0);
+        let w = Rcn::downgrade(&a);
+        assert!(Rcn::strong_count(&a) == 1);
+        assert!(Rcn::weak_count(&a) == 1);
+        drop(w);
+        assert!(Rcn::strong_count(&a) == 1);
+        assert!(Rcn::weak_count(&a) == 0);
+        let c = a.share();
+        assert!(Rcn::strong_count(&a) == 2);
+        assert!(Rcn::weak_count(&a) == 0);
+        drop(c);
+    }
+
+    #[test]
+    fn weak_self_cyclic() {
+        struct Cycle {
+            x: RefCell<Option<Weakn<Cycle>>>,
+        }
+        let mut a = Rcn::new(Cycle { x: RefCell::new(None) });
+        let b = a.share().downgrade();
+        *a.x.borrow_mut() = Some(b);
+
+        let w = a.downgrade();
+        assert!(!a.is_unique());
+        drop(w);
+        assert!(!a.is_unique());
+    }
+
+    #[test]
+    fn get_mut_test() {
+        let mut x = Rcn::new(3);
+        x.set(&4);
+        assert_eq!(*x, 4);
+        let y = x.share();
+        drop(y);
+        assert!(x.is_some());
+        let w = x.downgrade();
+        drop(x);
+        assert!(w.is_none());
+    }
+    
+    #[test]
+    fn test_cowrc_clone_weak() {
+        let mut cow0 = Rcn::new(75);
+        let cow1_weak = cow0.downgrade();
+        assert!(75 == *cow0);
+        assert!(75 == *cow1_weak.upgrade().unwrap());
+        let v = *cow0 + 1;
+        cow0.set(&v);
+        assert!(76 == *cow0);
+        assert!(cow1_weak.upgrade().is_some());
+    }
+
+    // #[test]
+    // fn test_from_box() {
+    //     let b: Box<u32> = Box::new(123);
+    //     let r: Rcn<u32> = Rcn::from(b);
+
+    //     assert_eq!(*r, 123);
+    // }
+
+    // #[test]
+    // fn test_from_box_str() {
+    //     use std::string::String;
+
+    //     let s = String::from("foo").into_boxed_str();
+    //     let r = Rcn::from(s);
+
+    //     assert_eq!(&r[..], "foo");
+    // }
+
+    // #[test]
+    // fn test_from_box_trait() {
+    //     use std::any::Any;
+    //     let r1: Rcn<dyn Any> = Rcn::new(i32::max_value());
+    //     let r2: Rcn<dyn Any> = Rcn::new("abc");
+    //     assert!(r1.share().downcast::<u32>().is_err());
+    //     let r1i32 = r1.downcast::<i32>();
+    //     assert!(r1i32.is_ok());
+    //     assert_eq!(r1i32.unwrap(), Rcn::new(i32::max_value()));
+    //     assert!(r2.share().downcast::<i32>().is_err());
+    //     let r2str = r2.downcast::<&'static str>();
+    //     assert!(r2str.is_ok());
+    //     assert_eq!(r2str.unwrap(), Rcn::new("abc"));
+    // }
 
 }
