@@ -9,7 +9,6 @@ use std::ops::{Deref, DerefMut};
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 
-#[derive(Debug, Clone)]
 struct RcBox<T: ?Sized> {
     strong: Cell<usize>,
     weak: Cell<usize>,
@@ -36,8 +35,6 @@ impl<T> Rcn<T> {
     /// assert_eq!(ten.is_some(), true);
     /// ```
     pub fn new(data: T) -> Rcn<T> {
-        // let mut rb = ;
-
         Rcn::<T> {
             ptr: Box::into_raw(Box::new(RcBox::<T> {
                     strong: Cell::new(1),
@@ -391,7 +388,7 @@ impl <T: ?Sized> Drop for Rcn<T> {
     }
 }
 
-impl<T> Deref for Rcn<T> {
+impl<T: ?Sized> Deref for Rcn<T> {
     type Target = T;
 
     #[inline(always)]
@@ -406,7 +403,7 @@ impl<T> Deref for Rcn<T> {
     }
 }
 
-impl<T> DerefMut for Rcn<T> {
+impl<T: ?Sized> DerefMut for Rcn<T> {
     
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut T {
@@ -420,13 +417,13 @@ impl<T> DerefMut for Rcn<T> {
     }
 }
 
-impl<T: fmt::Display> fmt::Display for Rcn<T> {
+impl<T: ?Sized + fmt::Display> fmt::Display for Rcn<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&**self, f)
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for Rcn<T> {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for Rcn<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Debug::fmt(&**self, f)
     }
@@ -439,7 +436,7 @@ impl<T: Default> Default for Rcn<T> {
     }
 }
 
-impl<T: PartialEq> PartialEq for Rcn<T> {
+impl<T: ?Sized + PartialEq> PartialEq for Rcn<T> {
 
     #[inline(always)]
     fn eq(&self, other: &Rcn<T>) -> bool {
@@ -452,9 +449,9 @@ impl<T: PartialEq> PartialEq for Rcn<T> {
     }
 }
 
-impl<T: Eq> Eq for Rcn<T> {}
+impl<T: ?Sized + Eq> Eq for Rcn<T> {}
 
-impl<T: PartialOrd> PartialOrd for Rcn<T> {
+impl<T: ?Sized + PartialOrd> PartialOrd for Rcn<T> {
 
     #[inline(always)]
     fn partial_cmp(&self, other: &Rcn<T>) -> Option<Ordering> {
@@ -482,19 +479,19 @@ impl<T: PartialOrd> PartialOrd for Rcn<T> {
     }
 }
 
-impl<T> Borrow<T> for Rcn<T> {
+impl<T: ?Sized> Borrow<T> for Rcn<T> {
     fn borrow(&self) -> &T {
         &**self
     }
 }
 
-impl<T> AsRef<T> for Rcn<T> {
+impl<T: ?Sized> AsRef<T> for Rcn<T> {
     fn as_ref(&self) -> &T {
         &**self
     }
 }
 
-impl<T> fmt::Pointer for Rcn<T> {
+impl<T: ?Sized> fmt::Pointer for Rcn<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Pointer::fmt(&(&**self as *const T), f)
     }
@@ -850,6 +847,12 @@ mod test {
         assert!(Rcn::ptr_eq(&five, &same_five));
         assert!(!Rcn::ptr_eq(&five, &other_five));
     }
+
+    // #[test]
+    // fn test_unsized() {
+    //     let foo: Rcn<[i32]> = Rcn::new([1, 2, 3]);
+    //     assert_eq!(foo, foo.share());
+    // }
 
     #[test]
     fn down_up_grade_some_test() {
