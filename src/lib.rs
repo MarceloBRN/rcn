@@ -6,8 +6,8 @@ use std::cell::Cell;
 use std::alloc::{GlobalAlloc, Layout, System, handle_alloc_error};
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::borrow::Borrow;
 use std::cmp::Ordering;
+use std::mem::{self, forget};
 
 struct RcBox<T: ?Sized> {
     strong: Cell<usize>,
@@ -73,6 +73,25 @@ impl<T> Rcn<T> {
             } else {
                 None
             }
+        }
+    }
+
+    #[inline]
+    pub fn try_unwrap(this: Self) -> Result<T, Self> {
+        if this.strong_count() == 1 {
+            unsafe {
+                let val = ptr::read(&*this); // copy the contained object
+
+                this.dec_strong();
+
+                this.inc_weak();
+                let _weak = Weakn { ptr: this.ptr };
+                
+                forget(this);
+                Ok(val)
+            }
+        } else {
+            Err(this)
         }
     }
 }
@@ -210,7 +229,7 @@ impl<T: ?Sized> Rcn<T> {
 
     /// This creates another pointer to the same inner value, increasing the strong reference count.
     ///
-    /// NOTE: The `share()` have the same functionality that `clone()` in `Rc` pointer of the std library.
+    /// NOTE: The `share()` have the same functionality that `clone()` of `Rc` pointer in the std library.
     ///
     /// # Examples
     ///
@@ -264,6 +283,18 @@ impl<T: ?Sized> Rcn<T> {
         Weakn { ptr: self.ptr }
     }
 
+    pub fn into_raw(this: Self) -> *const T {
+        let ptr: *const T = &*this;
+        mem::forget(this);
+        ptr
+    }
+
+    pub fn into_mut_raw(mut this: Self) -> *mut T {
+        let ptr: *mut T = &mut *this;
+        mem::forget(this);
+        ptr
+    }
+
     #[inline]
     fn strong(&self) -> usize {
         if self.ptr.is_null() {
@@ -290,7 +321,7 @@ impl<T: ?Sized> Rcn<T> {
         }
 
         unsafe { 
-            self.ptr.as_ref().unwrap().strong.set(self.strong() - 1); 
+            self.ptr.as_ref().unwrap().strong.set(self.strong() - 1);
         }
     }
 
@@ -367,9 +398,6 @@ impl<T: Clone> Clone for Rcn<T> {
     }
 }
 
-// #[global_allocator]
-// static GLOBAL: System = System;
-
 impl <T: ?Sized> Drop for Rcn<T> {
     fn drop(&mut self) {
         if self.is_some() {
@@ -380,11 +408,7 @@ impl <T: ?Sized> Drop for Rcn<T> {
                     System.dealloc(self.ptr as *mut u8, Layout::for_value(self.ptr.as_ref().unwrap())); 
                 }
             }
-            // println!("drop -> {:?}", self.ptr.is_null());
-            // println!("drop1 -> {:?}", std::mem::size_of::<*mut RcBox<T>>());
-            // println!("drop2 -> {:?}", std::mem::size_of::<usize>());
         }
-        
     }
 }
 
@@ -476,12 +500,6 @@ impl<T: ?Sized + PartialOrd> PartialOrd for Rcn<T> {
     #[inline(always)]
     fn ge(&self, other: &Rcn<T>) -> bool {
         **self >= **other
-    }
-}
-
-impl<T: ?Sized> Borrow<T> for Rcn<T> {
-    fn borrow(&self) -> &T {
-        &**self
     }
 }
 
@@ -618,13 +636,13 @@ impl<T: Clone> Clone for Weakn<T> {
     }
 }
 
-impl<T: fmt::Debug> fmt::Debug for Weakn<T> {
+impl<T: ?Sized + fmt::Debug> fmt::Debug for Weakn<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "(Weakn)")
     }
 }
 
-impl<T: PartialEq> PartialEq for Weakn<T> {
+impl<T: ?Sized + PartialEq> PartialEq for Weakn<T> {
 
     #[inline(always)]
     fn eq(&self, other: &Weakn<T>) -> bool {
@@ -637,9 +655,9 @@ impl<T: PartialEq> PartialEq for Weakn<T> {
     }
 }
 
-impl<T: Eq> Eq for Weakn<T> {}
+impl<T: ?Sized + Eq> Eq for Weakn<T> {}
 
-impl<T: PartialOrd> PartialOrd for Weakn<T> {
+impl<T: ?Sized + PartialOrd> PartialOrd for Weakn<T> {
 
     #[inline(always)]
     fn partial_cmp(&self, other: &Weakn<T>) -> Option<Ordering> {
@@ -667,7 +685,7 @@ impl<T: PartialOrd> PartialOrd for Weakn<T> {
     }
 }
 
-impl<T> Deref for Weakn<T> {
+impl<T: ?Sized> Deref for Weakn<T> {
     type Target = T;
 
     #[inline(always)]
@@ -941,6 +959,18 @@ mod test {
         cow0.set(&v);
         assert!(76 == *cow0);
         assert!(cow1_weak.upgrade().is_some());
+    }
+
+    #[test]
+    fn try_unwrap() {
+        let x = Rcn::new(3);
+        assert_eq!(Rcn::try_unwrap(x), Ok(3));
+        let x = Rcn::new(4);
+        let _y = x.share();
+        assert_eq!(Rcn::try_unwrap(x), Err(Rcn::new(4)));
+        let x = Rcn::new(5);
+        let _w = x.downgrade();
+        assert_eq!(Rcn::try_unwrap(x), Ok(5));
     }
 
     // #[test]
