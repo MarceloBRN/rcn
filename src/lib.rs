@@ -63,6 +63,25 @@ impl<T> Rcn<T> {
         }
     }
 
+    /// Constructs a `Rcn<T>` with none value. 
+    /// Takes the value out of the option, leaving a None in its place. Returns `Some(T)` if the current `Rcn` pointer is unique, and `None` otherwise. It is unique if `weak_count == 0` and `strong_count == 1`.
+    /// # Example
+    ///
+    /// ```
+    /// extern crate rcn;
+    /// use rcn::Rcn;
+    ///
+    /// let mut t1: Rcn<i32> = Rcn::new(100);
+    /// let mut t2: Rcn<i32> = t1.share();
+    /// assert_eq!(t1.is_unique(), false);
+    /// assert_eq!(t1.take(), None);
+    /// drop(t1);
+    /// assert_eq!(t2.is_unique(), true);
+    /// assert_eq!(t2.take(), Some(100));
+    /// assert_eq!(t2.is_none(), true);
+    /// let mut t3: Rcn<i32> = Rcn::none();
+    /// assert_eq!(t3.take(), None);
+    /// ``` 
     #[inline]
     pub fn take(&mut self) -> Option<T> {
         unsafe {
@@ -137,7 +156,7 @@ impl<T: ?Sized> Rcn<T> {
         self.weak()
     }
 
-    /// Returns `true` if the current `Rcn` pointer is shared with others `Rcn` or `Weakn` pointers. It is unique if `weak_count == 0` and `strong_count == 1`.
+    /// Returns `true` if the current `Rcn` pointer is not shared with others `Rcn` or `Weakn` pointers. It is unique if `weak_count == 0` and `strong_count == 1`.
     /// # Examples
     ///
     /// ```
@@ -533,10 +552,17 @@ pub struct Weakn<T: ?Sized> {
     ptr: *mut RcBox<T>,
 }
 
+#[allow(dead_code)]
 impl<T> Weakn<T> {
     pub fn new() -> Weakn<T> {
         Weakn {
             ptr: ptr::null_mut(),
+        }
+    }
+
+    pub fn none() -> Weakn<T> {
+        Weakn::<T> {
+            ptr: 0 as *mut RcBox<T>,
         }
     }
 }
@@ -713,7 +739,7 @@ impl<T: ?Sized> Deref for Weakn<T> {
 
 //         let layout = Layout::for_value(&*fake_ptr);
 
-//         let mem = GLOBAL.alloc(layout);
+//         let mem = System.alloc(layout);
 
 //         // Initialize the real RcBox
 //         let inner = set_data_ptr(ptr as *mut T, mem) as *mut RcBox<T>;
@@ -971,6 +997,20 @@ mod test {
         let x = Rcn::new(5);
         let _w = x.downgrade();
         assert_eq!(Rcn::try_unwrap(x), Ok(5));
+    }
+
+    #[test]
+    fn name() {
+        let mut t1: Rcn<i32> = Rcn::new(100);
+        let mut t2: Rcn<i32> = t1.share();
+        assert_eq!(t1.is_unique(), false);
+        assert_eq!(t1.take(), None);
+        drop(t1);
+        assert_eq!(t2.is_unique(), true);
+        assert_eq!(t2.take(), Some(100));
+        assert_eq!(t2.is_none(), true);
+        let mut t3: Rcn<i32> = Rcn::none();
+        assert_eq!(t3.take(), None);
     }
 
     // #[test]
