@@ -86,7 +86,7 @@ impl<T> Rcn<T> {
     /// let ten = Rcn::new(10);
     /// assert_eq!(ten.is_some(), true);
     /// ```
-    pub fn new<'a>(data: T) -> Rcn<T> where T: 'a{
+    pub fn new(data: T) -> Rcn<T>{
         Rcn::<T> {
             ptr: Box::into_raw(Box::new(RcnBox::<T> {
                         strong: Cell::new(1),
