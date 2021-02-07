@@ -1,3 +1,31 @@
+//! Single-threaded reference-counting pointers with none values. `Rcn` stands for 'Reference Counted with None values'.
+//!
+//! The `Rcn<T>` provides shared ownership of a value of type `T`, allocated in the heap. The pointed-to value is only destroyed after the last `Rcn` is destroyed
+//! 
+//! The type `Rcn<T>` is similar to `Rc<T>` in standard library, but it has some differences
+//! 
+//! 
+//! 
+//! 
+//! 
+//! 
+//! 
+//! 
+//!
+//! 
+//!  
+//! [`Rcn`]: struct.Rcn.html
+//! [`Weakn`]: struct.Weakn.html
+//! [clone]: ../../std/clone/trait.Clone.html#tymethod.clone
+//! [`Cell`]: ../../std/cell/struct.Cell.html
+//! [`RefCell`]: ../../std/cell/struct.RefCell.html
+//! [send]: ../../std/marker/trait.Send.html
+//! [`Deref`]: ../../std/ops/trait.Deref.html
+//! [downgrade]: struct.Rcn.html#method.downgrade
+//! [upgrade]: struct.Weakn.html#method.upgrade
+//! [`None`]: ../../std/option/enum.Option.html#variant.None
+
+// use std::any::Any;
 use std::marker::PhantomData;
 #[allow(unused_imports)]
 use std::ptr::{self, NonNull};
@@ -8,16 +36,40 @@ use std::fmt;
 use std::ops::{Deref, DerefMut};
 use std::cmp::Ordering;
 use std::mem::{self, forget};
+// use std::mem::align_of_val;
+use std::rc::Rc;
+// use std::any::Any;
 
-struct RcBox<T: ?Sized> {
+struct RcnBox<T: ?Sized> {
     strong: Cell<usize>,
     weak: Cell<usize>,
     value: T,
 }
 
-/// A single-threaded reference-counting pointer with none value. 'Rcn' stands for 'Reference Counted with None'.
+
+// impl<T> RcnBox<T>{
+//     pub fn new<'a>(mut self, data: T) -> &'a mut Self where T: 'a
+//     {
+//         // let a = RcnBox::<T> {
+//         //     strong: Cell::new(1),
+//         //     weak: Cell::new(0),
+//         //     value: data,
+//         // };
+//         self.strong = Cell::new(1);
+//         self.weak = Cell::new(0);
+//         self.value = data;
+//         &mut self
+//     }
+// }
+
+/// A single-threaded reference-counting pointer with none value. `Rcn` stands for 'Reference Counted with None values'.
+/// 
+/// 
+/// 
+/// 
+
 pub struct Rcn<T: ?Sized>{
-    ptr: *mut RcBox<T>,
+    ptr: *mut RcnBox<T>,
     phantom: PhantomData<T>,
 }
 
@@ -27,20 +79,25 @@ impl<T> Rcn<T> {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```no_run
     /// extern crate rcn;
     /// use rcn::Rcn;
     ///
     /// let ten = Rcn::new(10);
     /// assert_eq!(ten.is_some(), true);
     /// ```
-    pub fn new(data: T) -> Rcn<T> {
+    pub fn new<'a>(data: T) -> Rcn<T> where T: 'a{
         Rcn::<T> {
-            ptr: Box::into_raw(Box::new(RcBox::<T> {
-                    strong: Cell::new(1),
-                    weak: Cell::new(0),
-                    value: data,
-                })),
+            ptr: Box::into_raw(Box::new(RcnBox::<T> {
+                        strong: Cell::new(1),
+                        weak: Cell::new(0),
+                        value: data,
+                    })),
+            // ptr: Box::leak(Box::new(RcnBox::<T> {
+            //         strong: Cell::new(1),
+            //         weak: Cell::new(0),
+            //         value: data,
+            //     })),
             phantom: PhantomData,
         }
     }
@@ -49,7 +106,7 @@ impl<T> Rcn<T> {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```no_run
     /// extern crate rcn;
     /// use rcn::Rcn;
     ///
@@ -58,7 +115,7 @@ impl<T> Rcn<T> {
     /// ```
     pub fn none() -> Rcn<T> {
         Rcn::<T> {
-            ptr: 0 as *mut RcBox<T>,
+            ptr: ptr::null_mut(),
             phantom: PhantomData,
         }
     }
@@ -67,7 +124,7 @@ impl<T> Rcn<T> {
     /// Takes the value out of the option, leaving a None in its place. Returns `Some(T)` if the current `Rcn` pointer is unique, and `None` otherwise. It is unique if `weak_count == 0` and `strong_count == 1`.
     /// # Example
     ///
-    /// ```
+    /// ```no_run
     /// extern crate rcn;
     /// use rcn::Rcn;
     ///
@@ -87,7 +144,7 @@ impl<T> Rcn<T> {
         unsafe {
             if self.is_unique() {
                 let out_ptr = self.ptr;
-                self.ptr = 0 as *mut RcBox<T>;
+                self.ptr = 0 as *mut RcnBox<T>;
                 Some(out_ptr.read().value)
             } else {
                 None
@@ -95,6 +152,29 @@ impl<T> Rcn<T> {
         }
     }
 
+    
+    /// Returns the contained value, if the `Rcn` has exactly one strong reference.
+    ///
+    /// Otherwise, an [`Err`][result] is returned with the same `Rcn` that was
+    /// passed in.
+    ///
+    /// This will succeed even if there are outstanding weak references.
+    ///
+    /// [result]: https://doc.rust-lang.org/std/result/enum.Result.html
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// extern crate rcn;
+    /// use rcn::Rcn;
+    ///
+    /// let x = Rcn::new(3);
+    /// assert_eq!(Rcn::try_unwrap(x), Ok(3));
+    ///
+    /// let x = Rcn::new(4);
+    /// let _y = Rcn::share(&x);
+    /// assert_eq!(*Rcn::try_unwrap(x).unwrap_err(), 4);
+    /// ```
     #[inline]
     pub fn try_unwrap(this: Self) -> Result<T, Self> {
         if this.strong_count() == 1 {
@@ -253,6 +333,7 @@ impl<T: ?Sized> Rcn<T> {
     /// # Examples
     ///
     /// ```
+    /// extern crate rcn;
     /// use rcn::Rcn;
     ///
     /// let ptr = Rcn::new(80);
@@ -282,18 +363,19 @@ impl<T: ?Sized> Rcn<T> {
     }
 
 
-    /// Creates a new [`Weakn`][weakn] pointer to this value.
+    /// Creates a new [`Weakn`][weakn] pointer to this value. NOTE: This function don't destroy current Rcn pointer. 
     ///
     /// [weakn]: struct.Weakn.html
     ///
     /// # Examples
     ///
     /// ```
+    /// extern crate rcn;
     /// use rcn::Rcn;
     ///
-    /// let five = Rcn::new(5);
+    /// let five = Rcn::new(5); //strong_count = 1 and weak_count = 0
     ///
-    /// let weak_five = Rcn::downgrade(&five);
+    /// let weak_five = Rcn::downgrade(&five); //strong_count = 1 and weak_count = 1
     /// ```
     pub fn downgrade(&self) -> Weakn<T> {
         self.inc_weak();
@@ -302,6 +384,18 @@ impl<T: ?Sized> Rcn<T> {
         Weakn { ptr: self.ptr }
     }
 
+    /// Consumes the `Rcn`, returning the wrapped pointer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// extern crate rcn;
+    /// use rcn::Rcn;
+    ///
+    /// let x = Rcn::new(10);
+    /// let x_ptr = Rcn::into_raw(x);
+    /// assert_eq!(unsafe { *x_ptr }, 10);
+    /// ```
     pub fn into_raw(this: Self) -> *const T {
         let ptr: *const T = &*this;
         mem::forget(this);
@@ -312,6 +406,23 @@ impl<T: ?Sized> Rcn<T> {
         let ptr: *mut T = &mut *this;
         mem::forget(this);
         ptr
+    }
+
+    pub unsafe fn from_raw(ptr: *const T) -> Rcn<T> where T: Clone{
+        let v = ptr.as_ref().unwrap();
+
+        let rcn = Rcn::<T> {
+            ptr: Box::into_raw(Box::new(RcnBox::<T> {
+                    strong: Cell::new(1),
+                    weak: Cell::new(0),
+                    value: (*v).clone(),
+                })),
+            phantom: PhantomData,
+        };
+        
+        mem::forget(ptr);
+
+        rcn
     }
 
     #[inline]
@@ -372,7 +483,7 @@ impl<T: ?Sized> Rcn<T> {
 
 #[allow(dead_code)]
 impl<T: Clone> Rcn<T> {
-
+    ///Get a clone of internal data
     #[inline(always)]
     pub fn get(&self) -> T {
         if self.is_some() {
@@ -402,7 +513,7 @@ impl<T: Clone> Clone for Rcn<T> {
         if self.is_some() {
             unsafe {
                 Rcn::<T> {
-                    ptr: Box::into_raw(Box::new(RcBox {
+                    ptr: Box::into_raw(Box::new(RcnBox {
                             strong: Cell::new(1),
                             weak:  Cell::new(0),
                             value: self.ptr.as_ref().unwrap().value.clone(),
@@ -413,7 +524,6 @@ impl<T: Clone> Clone for Rcn<T> {
         } else {
             Rcn::none()
         }
-        
     }
 }
 
@@ -540,16 +650,69 @@ impl<T> From<T> for Rcn<T> {
     }
 }
 
-// impl<T> From<Box<T>> for Rcn<T> {
+
+impl<T: ?Sized> From<Box<T>> for Rcn<T> where T: Clone {
+    #[inline]
+    fn from(v: Box<T>) -> Rcn<T> {
+        
+        unsafe {
+            let bptr = Box::into_raw(v);
+            let nnptr = NonNull::new_unchecked(bptr);
+            let cptr: *const T = nnptr.as_ref();
+
+            Rcn::<T>::from_raw(cptr)
+        }
+    }
+}
+
+impl<T: ?Sized> From<Rc<T>> for Rcn<T> where T: Clone {
+    #[inline]
+    fn from(v: Rc<T>) -> Rcn<T> {
+        unsafe {
+            let cptr = Rc::into_raw(v);
+            Rcn::<T>::from_raw(cptr)
+        }
+    }
+}
+
+// impl Rcn<dyn Any> {
 //     #[inline]
-//     fn from(v: Box<T>) -> Rcn<T> {
-//         Rcn::from_box(v)
+//     /// Attempt to downcast the `Rc<dyn Any>` to a concrete type.
+//     ///
+//     /// # Examples
+//     ///
+//     /// ```
+//     /// extern crate rcn;
+//     /// use rcn::Rcn;
+//     /// 
+//     /// use std::any::Any;
+//     ///
+//     /// fn print_if_string(value: Rcn<dyn Any>) {
+//     ///     if let Ok(string) = value.downcast::<String>() {
+//     ///         println!("String ({}): {}", string.len(), string);
+//     ///     }
+//     /// }
+//     ///
+//     /// fn main() {
+//     ///     let my_string = "Hello World".to_string();
+//     ///     print_if_string(Rcn::new(my_string));
+//     ///     print_if_string(Rcn::new(0i8));
+//     /// }
+//     /// ```
+//     pub fn downcast<T>(self) -> Result<Rcn<T>, Rcn<dyn Any>> where T: Any {
+//         if (*self).is::<T>() {
+//             let ptr = self.ptr as *mut RcnBox<T>;
+//             forget(self);
+//             Ok(Rcn::<T> { ptr: ptr, phantom: PhantomData })
+//         } else {
+//             Err(self)
+//         }
 //     }
 // }
 
 #[allow(dead_code)]
 pub struct Weakn<T: ?Sized> {
-    ptr: *mut RcBox<T>,
+    ptr: *mut RcnBox<T>,
 }
 
 #[allow(dead_code)]
@@ -562,7 +725,7 @@ impl<T> Weakn<T> {
 
     pub fn none() -> Weakn<T> {
         Weakn::<T> {
-            ptr: 0 as *mut RcBox<T>,
+            ptr: 0 as *mut RcnBox<T>,
         }
     }
 }
@@ -726,48 +889,6 @@ impl<T: ?Sized> Deref for Weakn<T> {
     }
 }
 
-// unsafe fn set_data_ptr<T, U>(mut ptr: *mut T, data: *mut U) -> *mut T {
-//     ptr::write(&mut ptr as *mut _ as *mut *mut u8, data as *mut u8);
-//     ptr
-// }
-
-// impl<T> Rcn<T> {
-//     // Allocates an `RcBox<T>` with sufficient space for an unsized value
-//     unsafe fn allocate_for_ptr(ptr: *const T) -> *mut RcBox<T> {
-//         // Create a fake RcBox to find allocation size and alignment
-//         let fake_ptr = ptr as *mut RcBox<T>;
-
-//         let layout = Layout::for_value(&*fake_ptr);
-
-//         let mem = System.alloc(layout);
-
-//         // Initialize the real RcBox
-//         let inner = set_data_ptr(ptr as *mut T, mem) as *mut RcBox<T>;
-
-//         ptr::write(&mut (*inner).strong, Cell::new(1));
-//         ptr::write(&mut (*inner).weak, Cell::new(1));
-
-//         inner
-//     }
-
-//     fn from_box(v: Box<T>) -> Rcn<T> {
-//         unsafe {
-//             let bptr = Box::into_raw(v);
-//             // let bptr = box_unique.as_ptr();
-
-//             let value_size = size_of_val(&*bptr);
-//             let ptr = Self::allocate_for_ptr(bptr);
-
-//             ptr::copy_nonoverlapping(
-//                 bptr as *const T as *const u8,
-//                 &mut (*ptr).value as *mut _ as *mut u8,
-//                 value_size);
-
-//             Rcn { ptr: NonNull::new_unchecked(ptr), phantom: PhantomData }
-//         }
-//     }
-// }
-
 #[allow(unused_imports)]
 #[cfg(test)]
 mod test {
@@ -892,7 +1013,8 @@ mod test {
         assert!(!Rcn::ptr_eq(&five, &other_five));
     }
 
-    // #[test]
+    // // Issue: unsizing fails when associated types are involved (#50213)
+    // #[test] 
     // fn test_unsized() {
     //     let foo: Rcn<[i32]> = Rcn::new([1, 2, 3]);
     //     assert_eq!(foo, foo.share());
@@ -952,7 +1074,7 @@ mod test {
         struct Cycle {
             x: RefCell<Option<Weakn<Cycle>>>,
         }
-        let mut a = Rcn::new(Cycle { x: RefCell::new(None) });
+        let a = Rcn::new(Cycle { x: RefCell::new(None) });
         let b = a.share().downgrade();
         *a.x.borrow_mut() = Some(b);
 
@@ -1013,22 +1135,41 @@ mod test {
         assert_eq!(t3.take(), None);
     }
 
-    // #[test]
-    // fn test_from_box() {
-    //     let b: Box<u32> = Box::new(123);
-    //     let r: Rcn<u32> = Rcn::from(b);
+    #[test]
+    fn into_from_raw() {
+        let x = Rcn::new(Box::new("hello"));
+        let y = x.share();
 
-    //     assert_eq!(*r, 123);
-    // }
+        let x_ptr = Rcn::into_raw(x);
+        drop(y);
+        unsafe {
+            assert_eq!(**x_ptr, "hello");
 
-    // #[test]
-    // fn test_from_box_str() {
-    //     use std::string::String;
+            let x = Rcn::from_raw(x_ptr);
+            assert_eq!(**x, "hello");
 
-    //     let s = String::from("foo").into_boxed_str();
-    //     let r = Rcn::from(s);
+            assert_eq!(Rcn::try_unwrap(x).map(|x| *x), Ok("hello"));
+        }
+    }
 
-    //     assert_eq!(&r[..], "foo");
-    // }
+    #[test]
+    fn test_from_box() {
+        let b: Box<u64> = Box::new(100);
+        let r: Rcn<u64> = Rcn::from(b);
+
+        println!("r = {:?}", r.is_none());
+
+        assert_eq!(*r, 100);
+    }
+
+    #[test]
+    fn test_from_box_str() {
+        use std::string::String;
+
+        let s = String::from("foofoofoo").into_boxed_str();
+        let r = Rcn::from(s);
+
+        assert_eq!(&r[..], "foofoofoo");
+    }
 
 }

@@ -1,2 +1,2 @@
 # rcn
-Single-threaded reference-counting pointers with none partial values
+Single-threaded reference-counting pointers with none values
